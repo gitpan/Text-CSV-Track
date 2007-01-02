@@ -8,3 +8,4 @@ t/Text-CSV-Track-Max.t
 lib/Text/CSV/Track.pm
 lib/Text/CSV/Track/Min.pm
 lib/Text/CSV/Track/Max.pm
+META.yml                                 Module meta-data (added by MakeMaker)

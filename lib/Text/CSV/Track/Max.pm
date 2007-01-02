@@ -1,14 +1,14 @@
 =head1 NAME
 
-Text::CSV::Track::Max - same as Text::CSV::Track but stores the greater value
+Text::CSV::Track::Max - same as Text::CSV::Track but stores the greatest value
 
 =head1 VERSION
 
-v1.0 - created to track last login time
+This documentation refers to version 0.2. 
 
 =head1 SYNOPSIS
 
-	see Text::CSV::Track
+see L<Text::CSV::Track> as this is inherited object from it.
 	
 =head1 DESCRIPTION
 
@@ -19,8 +19,8 @@ old one. It it's higher then the value is updated if not old value persists.
 
 package Text::CSV::Track::Max;
 
-our $VERSION = '0.1';
-use 5.006;
+our $VERSION = '0.2';
+use 5.008;
 
 use strict;
 use warnings;
@@ -49,7 +49,7 @@ sub value_of {
 	return $self->SUPER::value_of($identificator) if not $is_set;
 	
 	#set
-	my $old_value = $rh_value_of->{$identificator};	#don't call SUPER::value_of becouse it will active lazy init that is may be not necessary
+	my $old_value = $rh_value_of->{$identificator};	#don't call SUPER::value_of because it will active lazy init that is may be not necessary
 	if (not defined $value
 			or not defined $old_value
 			or ($old_value < $value)
