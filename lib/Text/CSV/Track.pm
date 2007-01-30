@@ -1,10 +1,10 @@
 =head1 NAME
 
-Text::CSV::Track - module to work with .csv file that stores some value per identificator
+Text::CSV::Track - module to work with .csv file that stores some value(s) per identificator
 
 =head1 VERSION
 
-This documentation refers to version 0.2. 
+This documentation refers to version 0.3. 
 
 =head1 SYNOPSIS
 
@@ -13,11 +13,17 @@ This documentation refers to version 0.2.
 	#create object
 	my $access_time = Text::CSV::Track->new({ file_name => $file_name, ignore_missing_file => 1 });
 	
-	#store value
+	#set single value
+	$access_time->value_of($login, $access_time);
+
+	#fetch single value
+	print $access_time->value_of($login);
+
+	#set multiple values
 	$access_time->value_of($login, $access_time);
 	
-	#fetch value
-	print $access_time->value_of($login);
+	#fetch multiple values
+	my @fields = $access_time->value_of($login);
 	
 	#save changes
 	$access_time->store();
@@ -27,11 +33,19 @@ This documentation refers to version 0.2.
 		print "$login\n";
 	}
 
+	#getting muticolumn by hash
+	$track_object = Text::CSV::Track->new({
+		file_name    => $file_name
+		, hash_names => [ qw{ col coool } ]
+	});
+	my %hash = %{$track_object->hash_of('ident')};
+	print "second column is: ", $hash{'coool'}, "\n";
+
 =head1 DESCRIPTION
 
 The module manipulates csv file:
 
-"identificator","value"
+"identificator","value1"
 ...
 
 It is designet to work when multiple processes access the same file at
@@ -53,6 +67,9 @@ flag is needed. The exclusive lock will be held from the first read until
 the object is destroied. While the lock is there no other process that uses
 flock can read or write to this file.
 
+When setting and getting only single value value_of($ident) will return scalar.
+If setting/getting multiple columns then an array.
+
 =head1 METHODS
 
 =over 4
@@ -60,30 +77,63 @@ flock can read or write to this file.
 =item new()
 
 	new({
-		file_name           => 'filename.csv',
-		ignore_missing_file => 1,
-		full_time_lock      => 1,
-		
+		file_name             => 'filename.csv',
+		ignore_missing_file   => 1,
+		full_time_lock        => 1,
+		auto_store            => 1,
+		ignore_badly_formated => 1,
+		header_lines          => 3,
+		hash_names            => [ qw{ column1 column2 }  ],
+		single_column         => 1,
+
+		#L<Text::CSV> paramteres
+		sep_char              => q{,},
+		escape_char           => q{\\},
+		quote_char            => q{"},
+		always_quote          => 0,
+		binary                => 0,
+		type                  => undef,
 	})
 	
-all flags are optional.
+All flags are optional.
 
 'file_name' is used to read old results and then store the updated ones
 
-if 'ignore_missing_file' is set then the lib will just warn that it can not
+If 'ignore_missing_file' is set then the lib will just warn that it can not
 read the file. store() will use this name to store the results.
 
-if 'full_time_lock' is set the exclusive lock will be held until the object is
+If 'full_time_lock' is set the exclusive lock will be held until the object is
 not destroyed. use it when you need both reading the values and changing the values.
 If you need just read OR change then you don't need to set this flag. See description
 about lazy initialization.
 
+If 'auto_store' is on then the store() is called when object is destroied
+
+If 'ignore_badly_formated_lines' in on badly formated lines from input are ignored.
+Otherwise the modules calls croak.
+
+'header_lines' specifies how many lines of csv are the header lines. They will
+be skipped during the reading of the file and rewritten during the storing to the
+file.
+
+'hash_names' specifies hash names fro hash_of() function.
+
+'single_column' files that store just the identificator for line. In this case during the read
+1 is set as the second column. During store that one is dropped so single column will be stored
+back.
+
+See L<Text::CSV> for 'sep_char', 'escape_char', 'quote_char', 'always_quote', 'binary, type'
+
 =item value_of()
 
-is used to both store or retrieve the value. if called with one argument
+Is used to both store or retrieve the value. if called with one argument
 then it is a read. if called with two arguments then it will update the
 value. The update will be done ONLY if the supplied value is bigger.
-	
+
+=item hash_of()
+
+Returns hash of values. Names for the hash values are taken from hash_names parameter.
+
 =item store()
 
 when this one is called it will write the changes back to file.
@@ -92,19 +142,25 @@ when this one is called it will write the changes back to file.
 
 will return the array of identificators
 
+=item csv_line_of($ident)
+
+Returns one line of csv for given identificator.
+
 =back
 
 =head1 TODO
 
-- mention Track::Max and Track::Min
-- store() shuld croak when error so that lines will be not missing
-- ident_list() should return number of non undef rows in scalar context
-- strategy for Track ->new({ strategy => sub { $a > $b } })
-- then rewrite max/min to use it this way
+	- mention Track::Max and Track::Min
+	- ident_list() should return number of non undef rows in scalar context
+	- strategy for Track ->new({ strategy => sub { $a > $b } })
+	- then rewrite max/min to use it this way
+	- different column as the first one as identiffier column
+	- hash_of set functionality
+	- constraints for columns
 
 =head1 SEE ALSO
 
-SVN repository - L<http://svn.cle.sk/svn/cpan/Text-CSV-Track/>
+L<Text::CSV::Trac::Max>, L<Text::CSV::Trac::Min>, SVN repository - L<http://svn.cle.sk/svn/pub/cpan/Text-CSV-Track/>
 
 =head1 AUTHOR
 
@@ -116,7 +172,7 @@ Jozef Kutej <jozef.kutej@hp.com>
 
 package Text::CSV::Track;
 
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 use 5.006;
 
 use strict;
@@ -126,11 +182,26 @@ use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_accessors(
 	qw(
 		file_name
-		file_fh rh_value_of
-		lazy_init
+		_file_fh
+		_rh_value_of
+		_lazy_init
 		ignore_missing_file
 		full_time_lock
+		auto_store
 		_no_lock
+		ignore_badly_formated
+		_csv_format
+		header_lines
+		_header_lines_ra
+		hash_names
+		single_column
+
+		sep_char
+		escape_char
+		quote_char
+		always_quote
+		binary
+		type
 	)
 );
 
@@ -142,13 +213,7 @@ use English qw(-no_match_vars);
 use Fcntl ':flock'; # import LOCK_* constants
 use Fcntl ':seek';  # import SEEK_* constants
 
-#readonly defaults
 
-my $CSV_FORMAT = Text::CSV->new({
-		sep_char    => q{,},
-		escape_char => q{\\},
-		quote_char  => q{"},
-	});
 
 #new
 sub new {
@@ -159,23 +224,49 @@ sub new {
 	my $self = $class->SUPER::new($ra_arg);
 
 	#create empty hash
-	$self->{rh_value_of} = {};
+	$self->{_rh_value_of}     = {};
+	$self->{_header_lines_ra} = [];
 	
 	return $self;
+}
+
+sub csv_line_of {
+	my $self          = shift;
+	my $identificator = shift;
+
+	#combine values for csv file
+	my @fields = $self->value_of($identificator);
+
+	#removed entry
+	return undef if (@fields == 1) and (not defined $fields[0]);
+
+	#if in single column mode remove '1' from the start of the fields
+	shift(@fields) if $self->single_column;
+	
+	croak "invalid value to store to an csv file - ", $self->_csv_format->error_input(),"\n"
+		if (not $self->_csv_format->combine($identificator, @fields));
+	
+	return $self->_csv_format->string();
 }
 
 #get or set value
 sub value_of {
 	my $self          = shift;
 	my $identificator = shift;
-	my $is_set = (@_ > 0 ? 1 : 0);	#get or set request depending on number of arguments
-	my $value = shift;
+	my $is_set        = 0;	#by default get
+
+	#if we have one more parameter then it is set
+	my $value;
+	if (@_ >= 1) {
+		$is_set = 1;
+		$value = \@_;
+	}
 
 	#check if we have identificator
 	return if not $identificator;
 	
 	#value_of hash
-	my $rh_value_of = $self->{rh_value_of};
+	my $rh_value_of = $self->_rh_value_of;
 
 	#lazy initialization is needed for get
 	$self->_init() if not $is_set;
@@ -187,8 +278,43 @@ sub value_of {
 	}
 	#get
 	else {
-		return $rh_value_of->{$identificator}
+		return undef if not defined $rh_value_of->{$identificator};	
+	
+		#if we have more then one field return array
+		if (@{$rh_value_of->{$identificator}} > 1) {
+			return @{$rh_value_of->{$identificator}};
+		}
+		#otherwise return one and only value from array as scallar
+		else {
+			return ${$rh_value_of->{$identificator}}[0];
+		}
 	}
+}
+
+sub hash_of {
+	my $self          = shift;
+	my $identificator = shift;
+	my $is_set        = 0;	#by default get
+
+	croak "'hash_names' parameter not set" if not defined $self->hash_names;
+	my @hash_names    = @{$self->hash_names};
+
+	#if we have one more parameter then it is set
+	my $value;
+	if (@_ >= 1) {
+		$is_set = 1;
+		$value = \@_;
+	}
+	
+	croak "set 'hash_of' not implemented" if $is_set;
+	
+	my %hash;
+	my @fields = $self->value_of($identificator);
+	foreach my $name (@hash_names) {
+		$hash{$name} = shift @fields;
+	}
+	
+	return \%hash;
 }
 
 #save back changes 
@@ -199,10 +325,10 @@ sub store {
 	$self->_init();
 
 	#get local variables from self hash
-	my $rh_value_of    = $self->{rh_value_of};
-	my $file_name      = $self->{file_name};
-	my $full_time_lock = $self->{full_time_lock};
-	my $file_fh        = $self->{file_fh};
+	my $rh_value_of    = $self->_rh_value_of;
+	my $file_name      = $self->file_name;
+	my $full_time_lock = $self->full_time_lock;
+	my $file_fh        = $self->_file_fh;
 
 	if (not $full_time_lock) {
 		open($file_fh, "+>>", $file_name) or croak "can't write to file '$file_name' - $OS_ERROR";
@@ -216,22 +342,21 @@ sub store {
 	
 	#truncate the file so that we can store new results
 	truncate($file_fh, 0) or croak "can't truncate file '$file_name' - $OS_ERROR\n";
+
+	#write header lines
+	foreach my $header_line (@{$self->_header_lines_ra}) {
+		print {$file_fh} $header_line;
+	}
 	
 	#loop through identificators and write to file
 	foreach my $identificator (sort $self->ident_list()) {
-		#combine values for csv file
-		my $value = $self->value_of($identificator);
+		my $csv_line = $self->csv_line_of($identificator);
 
 		#skip removed entries
-		next if not defined $value;
-		
-		if (not $CSV_FORMAT->combine($identificator, $value)) {
-			warn "invalid value to store to an csv file - ", $CSV_FORMAT->error_input(),"\n";
-			next;
-		}
+		next if not $csv_line;
 		
 		#print the line to csv file
-		print {$file_fh} $CSV_FORMAT->string(), "\n";
+		print {$file_fh} $csv_line, "\n";
 	}
 	
 	close($file_fh);
@@ -241,20 +366,39 @@ sub store {
 sub _init {
 	my $self = shift;
 	
-	return if $self->{lazy_init};
+	return if $self->_lazy_init;
 
 	#prevent from reexecuting
-	$self->{lazy_init}   = 1;
+	$self->_lazy_init(1);
 	
 	#get local variables from self hash
-	my $rh_value_of         = $self->{rh_value_of};
-	my $file_name           = $self->{file_name};
-	my $ignore_missing_file = $self->{ignore_missing_file};
-	my $full_time_lock      = $self->{full_time_lock};
-	my $_no_lock            = $self->{_no_lock};
+	my $rh_value_of         = $self->_rh_value_of;
+	my $file_name           = $self->file_name;
+	my $ignore_missing_file = $self->ignore_missing_file;
+	my $full_time_lock      = $self->full_time_lock;
+	my $_no_lock            = $self->_no_lock;
+	my $header_lines_count  = $self->header_lines;
+
+	#Text::CSV variables
+	my $sep_char            = defined $self->sep_char    ? $self->sep_char    : q{,};
+	my $escape_char         = defined $self->escape_char ? $self->escape_char : q{\\};
+	my $quote_char          = defined $self->quote_char  ? $self->quote_char  : q{"};
+	my $always_quote        = $self->always_quote;
+	my $binary              = $self->binary;
+	my $type                = $self->type;
 	
 	#done with initialization if file_name empty
 	return if not $file_name;
+
+	#define csv format
+	$self->_csv_format(Text::CSV->new({
+		sep_char     => $sep_char,
+		escape_char  => $escape_char,
+		quote_char   => $quote_char,
+		always_quote => $always_quote,
+		binary       => $binary,
+		type         => $type,
+	}));
 
 	#default open mode is reading
 	my $open_mode = '<';
@@ -268,15 +412,16 @@ sub _init {
 			$open_mode = '+<';
 		}
 	}
-	
+
 	#open file with old stored values and handle error
 	my $file_fh;
 	if (not open($file_fh, $open_mode, $file_name)) {
-		if (defined $ignore_missing_file) {
+		if ($ignore_missing_file) {
+			$OS_ERROR = undef;
 			return;
 		}
 		else {
-			croak "can't read access file '$file_name' - $OS_ERROR";
+			croak "can't read file '$file_name' - $OS_ERROR";
 		}
 	}
 	
@@ -293,33 +438,57 @@ sub _init {
 		flock($file_fh, LOCK_SH) or croak "can't lock file '$file_name' - $OS_ERROR\n";
 	}
 
+	#create hash of identificator => 1
+	my %identificator_exist = map { $_ => 1 } $self->ident_list;
+
 	#parse lines and store values in the hash
 	LINE:
 	while (my $line = <$file_fh>) {
+		#skip header lines and save them for store()
+		if ($header_lines_count) {
+			#save push header line
+			push(@{$self->_header_lines_ra}, $line);
+			
+			#decrease header lines code so then we will know when there is an end of headers
+			$header_lines_count--;
+			
+			next;
+		}
+	
 		#verify line. if incorrect skip with warning
-		if (!$CSV_FORMAT->parse($line)) {
-			warn "badly formated '$file_name' csv line ", $file_fh->input_line_number(), " - '$line'. skipping\n";
-			next LINE;
+		if (!$self->_csv_format->parse($line)) {
+			chomp($line);			
+			my $msg = "badly formated '$file_name' csv line " . $file_fh->input_line_number() . " - '$line'.\n";
+
+			#by default croak on bad line			
+			croak $msg if not $self->ignore_badly_formated;
+			
+			#if ignore_badly_formated_lines is on just print warning
+			warn $msg;
+			
+			next;
 		}
 		
 		#extract fields
-		my ($identificator, $value) = $CSV_FORMAT->fields();
+		my @fields = $self->_csv_format->fields();
+		my $identificator = shift @fields;
+		
+		#if in single column mode insert '1' to the fields
+		unshift(@fields, 1) if $self->single_column;
 
-		#save the value that we have now in hash
-		my $new_value = $self->value_of($identificator);
+		#save present fields
+		my @old_fields = $self->value_of($identificator);
 				
 		#set the value from file
-		$self->value_of($identificator, $value);
+		$self->value_of($identificator, @fields);
 
-		#if we already changed this value update over it
-		if (defined $new_value) {
-			$self->value_of($identificator, $new_value);
-		}
+		#set the value from before values from file was read !needed becouse of the strategy!
+		$self->value_of($identificator, @old_fields) if $identificator_exist{$identificator};
 	}
 	
 	#if full time lock then store file handle
 	if ($full_time_lock) {
-		$self->{file_fh} = $file_fh;
+		$self->_file_fh($file_fh);
 	}
 	#otherwise release shared lock and close file
 	else {
@@ -335,7 +504,7 @@ sub ident_list {
 	$self->_init();
 
 	#get local variables from self hash
-	my $rh_value_of = $self->{rh_value_of};
+	my $rh_value_of = $self->_rh_value_of;
 
 	return keys %{$rh_value_of};
 }
@@ -343,14 +512,17 @@ sub ident_list {
 sub finish {
 	my $self = shift;
 
-	#get local variables from self hash
-	my $file_fh = $self->{file_fh};
+	#call store if in auto_store mode
+	$self->store() if $self->auto_store;
 
-	if ($file_fh) {
+	#get local variables from self hash
+	my $file_fh = $self->_file_fh;
+
+	if (defined $file_fh) {
 		close($file_fh);
 	}	
 
-	$self->{file_fh} = undef;
+	$self->_file_fh(undef);
 }
 
 sub DESTROY {
@@ -359,3 +531,4 @@ sub DESTROY {
 	$self->finish();	
 }
 
+1;

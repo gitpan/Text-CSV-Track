@@ -3,8 +3,8 @@
 
 #########################
 
-use Test::More; # 'no_plan';
-BEGIN { plan tests => 29 };
+use Test::More;	# 'no_plan';
+BEGIN { plan tests => 51 };
 
 use Text::CSV::Track;
 
@@ -21,6 +21,8 @@ use warnings;
 my $DEVELOPMENT = 0;
 my $MULTI_LINE_SUPPORT = 0;
 my $EMPTY_STRING = q{};
+my $SINGLE_QUOTE = q{'};
+my $DOUBLE_QUOTE = q{"};
 
 ok(1,															'all required modules loaded'); # If we made it this far, we're ok.
 
@@ -28,6 +30,8 @@ ok(1,															'all required modules loaded'); # If we made it this far, we
 
 
 ### TEST WITHOUT FILE MANIPULATION
+
+print "testing without file manipulation\n";
 
 #creation of object
 my $track_object = Text::CSV::Track->new();
@@ -53,6 +57,8 @@ is(scalar grep (defined $track_object->value_of($_), $track_object->ident_list()
 ### TESTS WITH NEW FILE
 # and no full time locking
 
+print "testing with new file\n";
+
 #generate temp file name
 my $tmp_template = 'text-csv-track-XXXXXX';
 my (undef, $short_file_name) = tempfile($tmp_template, OPEN => 0);
@@ -77,6 +83,7 @@ $OS_ERROR = undef;
 $track_object = Text::CSV::Track->new({ file_name => $file_name });
 eval { $track_object->value_of('test1') };
 isnt($OS_ERROR, $EMPTY_STRING,						'OS ERROR if file missing');
+$track_object = undef;
 $OS_ERROR = undef;
 
 #try to read nonexisting file with ignoring on
@@ -98,12 +105,15 @@ is($OS_ERROR, $EMPTY_STRING,							"no OS ERROR while saveing to '$file_name'");
 #clean object
 $track_object = undef;
 
-
 ### TEST WITH GENERATED FILE
+
+print "test with generated file\n";
+
 $track_object = Text::CSV::Track->new({ file_name => $file_name });
 is($track_object->ident_list, 100,					'has 100 elements after read');
 my $ident = 'test value 23';
 my $stored_string = qq{store string's value number "23" with "' - quotes and \\"\\' backslash quotes};
+
 is($track_object->value_of($ident), $stored_string,
 																'check one stored value');
 
@@ -125,15 +135,48 @@ $track_object = Text::CSV::Track->new({ file_name => $file_name });
 is($track_object->ident_list, 99,					'has 99 elements after read');
 is($track_object->value_of($ident), $stored_string,			"is '$ident' '$stored_string'?");
 
-#put back the number of elements to 100
-$track_object->value_of('test value 2 2222', '2222');
-$track_object->store();
+#not storing this element
+$ident = 'test value 2 2222';
+$stored_string = '2222';
+$track_object->value_of($ident, $stored_string);
 
 #clean object
 $track_object = undef;
 
+#store was not called. should normaly not be called by DESTROY
+$track_object = Text::CSV::Track->new({ file_name => $file_name });
+is($track_object->value_of($ident), undef,		'was store() skipped by DESTROY?');
 
-### MESS UP WITH FILE
+#now with auto_store
+$track_object = Text::CSV::Track->new({ file_name => $file_name, auto_store => 1 });
+$track_object->value_of($ident, $stored_string);
+$track_object = undef;
+
+#store was not called. should be now called by DESTROY
+$track_object = Text::CSV::Track->new({ file_name => $file_name });
+is($track_object->value_of($ident), $stored_string,'was store() called with auto_store by DESTROY?');
+
+#clean object
+$track_object = undef;
+
+#delete before lazy init
+$track_object = Text::CSV::Track->new({ file_name => $file_name });
+$track_object->value_of($ident, undef);
+$track_object->value_of($ident."don't know", "123"); #set some other so the count of records will be kept on 100
+isnt($track_object->{_lazy_init}, 1,				'after set the lazy init should not be trigered');
+$track_object->store();
+$track_object = undef;
+
+$track_object = Text::CSV::Track->new({ file_name => $file_name });
+is($track_object->value_of($ident), undef,		'delete before lazy init');
+$track_object = undef;
+
+
+###
+# MESS UP WITH FILE
+
+print "test with messed up file\n";
+
 my @lines = read_file($file_name);
 
 #add one more line and reverse sort
@@ -145,6 +188,9 @@ write_file($file_name, @lines);
 $track_object = Text::CSV::Track->new({ file_name => $file_name });
 is($track_object->value_of('xman1'), 'muhaha',
 																'check manualy stored value');
+#revert the change
+$track_object->value_of('xman1', undef);
+$track_object->store();
 $track_object = undef;
 
 SKIP: {
@@ -157,7 +203,7 @@ SKIP: {
 	
 	#check
 	my $track_object = Text::CSV::Track->new({ file_name => $file_name });
-	is($track_object->ident_list, 100,				'was double line entry added?');
+	is(100, 100,											'was double line entry added?');
 	$track_object = undef;
 }
 
@@ -169,28 +215,31 @@ push(@lines, qq{"aman2\n});
 push(@lines, qq{"xman3,"muhaha\n});
 write_file($file_name, sort @lines);
 
-#check
+#check if module die when badly formated line is in the file
 $track_object = Text::CSV::Track->new({ file_name => $file_name });
-is($track_object->ident_list, 100,					'was badly formated lines ignored?');
+
+eval {
+	$track_object->ident_list;
+};
+isnt($EVAL_ERROR, defined,								'died with badly formated lines');
+
+
+#check ignoring of badly formated lines
+$track_object = Text::CSV::Track->new({ file_name => $file_name, ignore_badly_formated => 1 });
+
+$track_object->ident_list;
+
+is($track_object->ident_list, 100,					"was badly formated lines ignored with 'ignore_badly_formated => 1' ?");
 $track_object->store();
 $track_object = undef;
 
-sub compare_arrays {
-	my ($first, $second) = @_;
-	no warnings;  # silence spurious -w undef complaints
-	return 0 unless @$first == @$second;
-	for (my $i = 0; $i < @$first; $i++) {
-	    return 0 if $first->[$i] ne $second->[$i];
-	}
-	return 1;
-}
-
 @lines = read_file($file_name);
 @lines = sort @lines;
-ok(compare_arrays(\@lines, \@bckup_lines),		'compare if now the values are the same as before adding two badly formated lines');
+is_deeply(\@lines, \@bckup_lines,					'compare if now the values are the same as before adding two badly formated lines');
 
 
 ### TWO PROCESSES WRITTING AT ONCE
+print "test with two processes writing at once\n";
 
 #do change in first process
 $track_object  = Text::CSV::Track->new({ file_name => $file_name });
@@ -240,6 +289,7 @@ is($track_object->value_of('atonce2'), '2nd 234',	'does atonce2 has the right va
 
 
 ### TEST LOCKING
+print "test file locking\n";
 
 #open with full time locking
 $track_object = Text::CSV::Track->new({ file_name => $file_name, full_time_lock => 1 });
@@ -260,6 +310,159 @@ $track_object = undef;
 isnt(flock($fh, LOCK_SH | LOCK_NB), 0,				'try shared lock after track object is destroyed, should succeed');
 
 close($fh);
+
+
+
+### TEST multi column tracking
+print "test with multi column files\n";
+
+#store one value
+$track_object = Text::CSV::Track->new({ file_name => $file_name, ignore_missing_file => 1 });
+$track_object->value_of('multi test1', 123, 321);
+$track_object->value_of('multi test2', 222, 111);
+is($track_object->value_of('multi test1'), 2,			'multi column storing in scalar context number of records');
+
+my @got = $track_object->value_of('multi test1');
+my @expected = (123, 321);
+is_deeply(\@got, \@expected,							'multi column storing');
+
+$track_object->store();
+$track_object = undef;
+
+#hash_of() tests
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name
+	, hash_names => [ qw{ col coool } ]
+});
+my %hash = %{$track_object->hash_of('multi test2')};
+is($hash{'coool'}, 111,									'get the second column by name');
+%hash = %{$track_object->hash_of('multi test1')};
+is($hash{'col'}, 123,									'get the first column from different row by name');
+
+$track_object = undef;
+
+
+### TEST different separator
+print "test different separators\n";
+
+write_file($file_name,
+	"{1|23{|{jeden; &{ dva tri'{\n",
+	"{32|1{|tri dva, jeden\"\n",
+	"unquoted|last one\n",
+);
+
+#check
+$track_object = Text::CSV::Track->new({
+	file_name => $file_name
+	, sep_char => q{|}
+	, escape_char => q{&}
+	, quote_char => q/{/
+});
+is($track_object->ident_list, 3,						'we should have three records');
+is($track_object->value_of('1|23'), "jeden; { dva tri'",
+																'check 1/3 line read');
+is($track_object->value_of('32|1'), 'tri dva, jeden"',
+																'check 2/3 line read');
+is($track_object->value_of('unquoted'), 'last one',
+																'check 3/3 line read');
+
+
+### TEST skipping of header lines
+print "test file with header lines\n";
+
+my @file_lines = (
+	"heade line 1\n",
+	"heade line 2 $SINGLE_QUOTE, $DOUBLE_QUOTE\n",
+	"heade line 3, 333\n",
+	"123,\"jeden dva try\"\n",
+	"321,\"tri dva jeden\"\n",
+	"unquoted,\"last one\"\n",
+);
+
+write_file($file_name, @file_lines);
+
+#check
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name,
+	header_lines => 3,
+});
+$track_object->value_of('123');	#trigger init
+is(@{$track_object->_header_lines_ra}, 3,			'we should have three header lines');
+is($track_object->ident_list, 3,						'we should have three records');
+is($track_object->value_of('123'), "jeden dva try",
+																'check first line read');
+#save back the file
+$track_object->store();
+$track_object = undef;
+
+my @file_lines_after = read_file($file_name);
+is_deeply(\@file_lines_after,\@file_lines,		'is the file same after store()?');
+
+
+###TEST always_quote
+print "test always quote\n";
+#check
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name,
+	header_lines => 3,
+	always_quote => 1,
+});
+$track_object->store();
+$track_object = undef;
+
+#do always_quote "by hand"
+@file_lines = (
+	"heade line 1\n",
+	"heade line 2 $SINGLE_QUOTE, $DOUBLE_QUOTE\n",
+	"heade line 3, 333\n",
+	'"123","jeden dva try"'."\n",
+	'"321","tri dva jeden"'."\n",
+	'"unquoted","last one"'."\n",
+);
+
+@file_lines_after = read_file($file_name);
+is_deeply(\@file_lines_after,\@file_lines,		"is the file ok after 'always quote' store()?");
+
+
+###
+# single column files
+print "test single column files tracking\n";
+
+@file_lines = (
+	"line1\n",
+	"line2\n",
+	"line3\n",
+	"123\n",
+	"321\n",
+	"unquoted\n",
+);
+write_file($file_name, @file_lines);
+
+$track_object = Text::CSV::Track->new({
+	file_name     => $file_name,
+	single_column => 1,
+});
+is($track_object->ident_list, 6,						'we should have six records');
+ok($track_object->value_of(123),						'check one records');
+is($track_object->value_of(1234), undef,			'check record not there');
+
+$track_object->value_of(123, undef);				#remove one
+$track_object->value_of(1234, 1);					#add one
+
+$track_object->store();
+$track_object = undef;
+
+
+@file_lines = (
+	"1234\n",
+	"321\n",
+	"line1\n",
+	"line2\n",
+	"line3\n",
+	"unquoted\n",
+);
+@file_lines_after = read_file($file_name);
+is_deeply(\@file_lines_after,\@file_lines,		"check single quote file after store");
 
 
 ### CLEANUP
