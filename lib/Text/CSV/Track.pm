@@ -4,7 +4,7 @@ Text::CSV::Track - module to work with .csv file that stores some value(s) per i
 
 =head1 VERSION
 
-This documentation refers to version 0.3. 
+This documentation refers to version 0.4. 
 
 =head1 SYNOPSIS
 
@@ -40,6 +40,16 @@ This documentation refers to version 0.3.
 	});
 	my %hash = %{$track_object->hash_of('ident')};
 	print "second column is: ", $hash{'coool'}, "\n";
+
+	#setting multicolumn by hash
+	$track_object->hash_of('ident2', { coool => 333 } );
+
+	#header lines
+	$track_object = Text::CSV::Track->new({
+		file_name           => $file_name,
+		header_lines        => \@header_lines,
+		ignore_missing_file => 1,
+	});
 
 =head1 DESCRIPTION
 
@@ -82,9 +92,10 @@ If setting/getting multiple columns then an array.
 		full_time_lock        => 1,
 		auto_store            => 1,
 		ignore_badly_formated => 1,
-		header_lines          => 3,
+		header_lines          => 3, #or [ '#heading1', '#heading2', '#heading3' ]
 		hash_names            => [ qw{ column1 column2 }  ],
 		single_column         => 1,
+		trunc                 => 1,
 
 		#L<Text::CSV> paramteres
 		sep_char              => q{,},
@@ -114,13 +125,16 @@ Otherwise the modules calls croak.
 
 'header_lines' specifies how many lines of csv are the header lines. They will
 be skipped during the reading of the file and rewritten during the storing to the
-file.
+file. After first read of value the ->header_lines becomes array ref of header lines.
+Optionaly you can set array ref and set the header lines.
 
 'hash_names' specifies hash names fro hash_of() function.
 
 'single_column' files that store just the identificator for line. In this case during the read
 1 is set as the second column. During store that one is dropped so single column will be stored
 back.
+
+'trunc' don't read previous file values. Header lines will persist.
 
 See L<Text::CSV> for 'sep_char', 'escape_char', 'quote_char', 'always_quote', 'binary, type'
 
@@ -155,7 +169,6 @@ Returns one line of csv for given identificator.
 	- strategy for Track ->new({ strategy => sub { $a > $b } })
 	- then rewrite max/min to use it this way
 	- different column as the first one as identiffier column
-	- hash_of set functionality
 	- constraints for columns
 
 =head1 SEE ALSO
@@ -172,7 +185,7 @@ Jozef Kutej <jozef.kutej@hp.com>
 
 package Text::CSV::Track;
 
-our $VERSION = '0.3';
+our $VERSION = '0.4';
 use 5.006;
 
 use strict;
@@ -192,9 +205,9 @@ __PACKAGE__->mk_accessors(
 		ignore_badly_formated
 		_csv_format
 		header_lines
-		_header_lines_ra
 		hash_names
 		single_column
+		trunc
 
 		sep_char
 		escape_char
@@ -212,7 +225,8 @@ use Carp::Clan;
 use English qw(-no_match_vars);
 use Fcntl ':flock'; # import LOCK_* constants
 use Fcntl ':seek';  # import SEEK_* constants
-
+use List::MoreUtils qw { first_index };
+use IO::Handle; #must be because file_fh->input_line_number function
 
 
 #new
@@ -223,9 +237,9 @@ sub new {
 	#build object from parent
 	my $self = $class->SUPER::new($ra_arg);
 
-	#create empty hash
-	$self->{_rh_value_of}     = {};
-	$self->{_header_lines_ra} = [];
+	#create empty pointers
+	$self->{_rh_value_of} = {};
+	$self->{header_lines} = [] if not defined $self->{header_lines};
 	
 	return $self;
 }
@@ -298,23 +312,37 @@ sub hash_of {
 
 	croak "'hash_names' parameter not set" if not defined $self->hash_names;
 	my @hash_names    = @{$self->hash_names};
+	my @fields = $self->value_of($identificator);
 
 	#if we have one more parameter then it is set
-	my $value;
+	my $rh;
 	if (@_ >= 1) {
 		$is_set = 1;
-		$value = \@_;
+		$rh     = shift;
+		
+		croak "not a hash reference as set argument" if ref $rh ne 'HASH';
 	}
 	
-	croak "set 'hash_of' not implemented" if $is_set;
-	
-	my %hash;
-	my @fields = $self->value_of($identificator);
-	foreach my $name (@hash_names) {
-		$hash{$name} = shift @fields;
+	if ($is_set) {
+		foreach my $key (keys %{$rh}) {
+			my $index = first_index { $_ eq $key } @hash_names;
+			
+			croak "no such hash key name '$key'" if $index == -1;
+
+			$fields[$index] = $rh->{$key};			
+		}
+		
+		#save back the fields
+		$self->value_of($identificator, @fields);
 	}
-	
-	return \%hash;
+	else {	
+		my %hash;
+		foreach my $name (@hash_names) {
+			$hash{$name} = shift @fields;
+		}
+		
+		return \%hash;
+	}
 }
 
 #save back changes 
@@ -325,10 +353,11 @@ sub store {
 	$self->_init();
 
 	#get local variables from self hash
-	my $rh_value_of    = $self->_rh_value_of;
-	my $file_name      = $self->file_name;
-	my $full_time_lock = $self->full_time_lock;
-	my $file_fh        = $self->_file_fh;
+	my $rh_value_of        = $self->_rh_value_of;
+	my $file_name          = $self->file_name;
+	my $full_time_lock     = $self->full_time_lock;
+	my $file_fh            = $self->_file_fh;
+	my $header_lines_count = scalar @{$self->header_lines};
 
 	if (not $full_time_lock) {
 		open($file_fh, "+>>", $file_name) or croak "can't write to file '$file_name' - $OS_ERROR";
@@ -337,15 +366,13 @@ sub store {
 		flock($file_fh, LOCK_EX) or croak "can't lock file '$file_name' - $OS_ERROR\n";
 	}
 
-	#do lazy init now becouse afterwards the file will be truncated
-	$self->_init();
-	
 	#truncate the file so that we can store new results
 	truncate($file_fh, 0) or croak "can't truncate file '$file_name' - $OS_ERROR\n";
-
+	
 	#write header lines
-	foreach my $header_line (@{$self->_header_lines_ra}) {
-		print {$file_fh} $header_line;
+	foreach my $header_line (@{$self->header_lines}) {
+		print {$file_fh} $header_line, "\n";
+		$header_lines_count--;
 	}
 	
 	#loop through identificators and write to file
@@ -377,8 +404,20 @@ sub _init {
 	my $ignore_missing_file = $self->ignore_missing_file;
 	my $full_time_lock      = $self->full_time_lock;
 	my $_no_lock            = $self->_no_lock;
-	my $header_lines_count  = $self->header_lines;
+	my $header_lines_count;
+	my $header_lines_from_file;
 
+	if (ref $self->{header_lines} eq 'ARRAY') {
+		$header_lines_count = scalar @{$self->header_lines};
+		$header_lines_from_file = 0;
+	}
+	else {
+		#initialize header_lines with array of empty strings if header_lines is number
+		$header_lines_count = $self->{header_lines};
+		$self->header_lines([ map {""} (1 .. $header_lines_count) ]);
+		$header_lines_from_file = 1;
+	}
+ 
 	#Text::CSV variables
 	my $sep_char            = defined $self->sep_char    ? $self->sep_char    : q{,};
 	my $escape_char         = defined $self->escape_char ? $self->escape_char : q{\\};
@@ -444,20 +483,23 @@ sub _init {
 	#parse lines and store values in the hash
 	LINE:
 	while (my $line = <$file_fh>) {
+		chomp($line);			
 		#skip header lines and save them for store()
 		if ($header_lines_count) {
-			#save push header line
-			push(@{$self->_header_lines_ra}, $line);
+			#save header line if not defined
+			${$self->header_lines}[$file_fh->input_line_number-1] = $line if $header_lines_from_file;
 			
 			#decrease header lines code so then we will know when there is an end of headers
 			$header_lines_count--;
 			
 			next;
 		}
+		
+		#skip reading of values if in 'trunc' mode
+		last if $self->trunc;
 	
 		#verify line. if incorrect skip with warning
 		if (!$self->_csv_format->parse($line)) {
-			chomp($line);			
 			my $msg = "badly formated '$file_name' csv line " . $file_fh->input_line_number() . " - '$line'.\n";
 
 			#by default croak on bad line			
@@ -485,7 +527,7 @@ sub _init {
 		#set the value from before values from file was read !needed becouse of the strategy!
 		$self->value_of($identificator, @old_fields) if $identificator_exist{$identificator};
 	}
-	
+
 	#if full time lock then store file handle
 	if ($full_time_lock) {
 		$self->_file_fh($file_fh);
@@ -507,6 +549,23 @@ sub ident_list {
 	my $rh_value_of = $self->_rh_value_of;
 
 	return keys %{$rh_value_of};
+}
+
+sub header_lines {
+	my $self = shift;
+
+	#set
+	if (@_ >= 1) {
+		$self->{header_lines} = shift;
+	} else
+	#get
+	{
+		#if _header_lines then do lazy init and get the header lines from file
+		$self->_init if (ref $self->{header_lines} ne 'ARRAY');
+	
+		return $self->{header_lines};
+	}
+	
 }
 
 sub finish {

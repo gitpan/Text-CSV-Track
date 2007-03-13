@@ -4,7 +4,7 @@
 #########################
 
 use Test::More;	# 'no_plan';
-BEGIN { plan tests => 51 };
+BEGIN { plan tests => 66 };
 
 use Text::CSV::Track;
 
@@ -329,20 +329,48 @@ is_deeply(\@got, \@expected,							'multi column storing');
 $track_object->store();
 $track_object = undef;
 
+print "hash tests\n";
 #hash_of() tests
 $track_object = Text::CSV::Track->new({
 	file_name    => $file_name
-	, hash_names => [ qw{ col coool } ]
+	, hash_names => [ qw{ col coool fi ga ro } ]
 });
 my %hash = %{$track_object->hash_of('multi test2')};
 is($hash{'coool'}, 111,									'get the second column by name');
 %hash = %{$track_object->hash_of('multi test1')};
 is($hash{'col'}, 123,									'get the first column from different row by name');
+$track_object->hash_of('multi test3', { coool => 321, ga => 654 } );
+$track_object->store;
 
 $track_object = undef;
 
+print "hash set tests\n";
+#hash_of() set tests
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name
+	, hash_names => [ qw{ col coool fi ga ro } ]
+});
 
-### TEST different separator
+%hash = %{$track_object->hash_of('multi test3')};
+is($hash{'ga'}, 654,										'check first column');
+is($hash{'coool'}, 321,									'check the second column');
+$track_object->hash_of('multi test3', { coool => 333, ro => 555 } );
+
+%hash = %{$track_object->hash_of('multi test3')};
+is($hash{'ga'}, 654,										'check first column (after single column hash set)');
+is($hash{'coool'}, 333,									'check the second column (after single column hash set)');
+is($hash{'ro'}, 555,										'check the second column (after single column hash set)');
+
+eval {
+	$track_object->hash_of('multi test3', { cooolxx => 333, ro => 555 } );
+};
+ok($EVAL_ERROR,											'setting unknown column should error - '.$EVAL_ERROR);
+$EVAL_ERROR = undef;
+
+$track_object = undef;
+
+###
+# TEST different separator
 print "test different separators\n";
 
 write_file($file_name,
@@ -386,8 +414,7 @@ $track_object = Text::CSV::Track->new({
 	file_name    => $file_name,
 	header_lines => 3,
 });
-$track_object->value_of('123');	#trigger init
-is(@{$track_object->_header_lines_ra}, 3,			'we should have three header lines');
+is(scalar @{$track_object->header_lines}, 3,		'we should have three header lines');
 is($track_object->ident_list, 3,						'we should have three records');
 is($track_object->value_of('123'), "jeden dva try",
 																'check first line read');
@@ -398,6 +425,95 @@ $track_object = undef;
 my @file_lines_after = read_file($file_name);
 is_deeply(\@file_lines_after,\@file_lines,		'is the file same after store()?');
 
+#check trunc mode
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name,
+	header_lines => 3,
+	trunc        => 1,
+});
+$track_object->value_of('123','jeden dva try 123');
+is($track_object->ident_list, 1,						'we should one records');
+$track_object->store();
+
+@file_lines_after = read_file($file_name);
+is(@file_lines_after , 4,								'we should have 3+1 lines in file');
+
+#test header lines and empty file
+unlink($file_name);
+my @header_lines = (
+	"header line 1",
+	"header line 2",
+	"header line 3",
+);
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => \@header_lines,
+	ignore_missing_file => 1,
+});
+$track_object->value_of('123','try 123');
+$track_object->store();
+@file_lines_after = read_file($file_name);
+is(@file_lines_after , 4,								'we should have 3+1 empty lines + one value in new file created');
+
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+	ignore_missing_file => 1,
+});
+is($track_object->value_of('123') , 'try 123',	'check the one stored value');
+
+my $file_content = read_file($file_name);
+my $file_content_expected = 'header line 1
+header line 2
+header line 3
+123,"try 123"
+';
+is($file_content, $file_content_expected,			'check file with forced header lines');
+
+print "changing header lines\n";
+@header_lines = (
+	"header line 1",
+	"header line 2",
+	"header line 33",
+);
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => \@header_lines,
+	ignore_missing_file => 1,
+});
+$track_object->value_of('321','try 321');
+$track_object->store();
+$file_content = read_file($file_name);
+$file_content_expected = 'header line 1
+header line 2
+header line 33
+123,"try 123"
+321,"try 321"
+';
+is($file_content, $file_content_expected,			'check file with changed forced header lines');
+
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+});
+is_deeply($track_object->header_lines,\@header_lines,		"check fetching header lines");
+is($track_object->value_of('123') , 'try 123',	'check one stored value');
+
+#empty file + numeric header lines
+unlink($file_name);
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 1,
+	ignore_missing_file => 1,
+});
+$track_object->value_of('321','try 321');
+$track_object->store();
+my @file_lines2 = read_file($file_name);
+is(@file_lines2, 2,									'check numeric header lines definition on empty file');
+
+
+#restore file
+write_file($file_name, @file_lines);
 
 ###TEST always_quote
 print "test always quote\n";
