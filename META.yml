@@ -1,12 +1,13 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Text-CSV-Track
-version:      0.4
+version:      0.5
 version_from: lib/Text/CSV/Track.pm
 installdirs:  site
 requires:
     Carp::Clan:                    0
     Class::Accessor::Fast:         0
+    File::Slurp:                   0
     IO::Handle:                    0
     List::MoreUtils:               0
     Text::CSV:                     0
