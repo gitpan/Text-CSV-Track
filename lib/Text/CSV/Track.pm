@@ -4,7 +4,7 @@ Text::CSV::Track - module to work with .csv file that stores some value(s) per i
 
 =head1 VERSION
 
-This documentation refers to version 0.5. 
+This documentation refers to version 0.6. 
 
 =head1 SYNOPSIS
 
@@ -87,18 +87,20 @@ If setting/getting multiple columns then an array.
 =item new()
 
 	new({
-		file_name              => 'filename.csv',
-		ignore_missing_file    => 1,
-		full_time_lock         => 1,
-		auto_store             => 1,
-		ignore_badly_formated  => 1,
-		header_lines           => 3, #or [ '#heading1', '#heading2', '#heading3' ]
-		hash_names             => [ qw{ column1 column2 }  ],
-		single_column          => 1,
-		trunc                  => 1,
-		replace_new_lines_with => '|',
+		file_name                   => 'filename.csv',
+		ignore_missing_file         => 1,
+		full_time_lock              => 1,
+		auto_store                  => 1,
+		ignore_badly_formated       => 1,
+		header_lines                => 3, #or [ '#heading1', '#heading2', '#heading3' ]
+		footer_lines                => 3, #or [ '#footer1', '#footer2', '#footer3' ]
+		hash_names                  => [ qw{ column1 column2 }  ],
+		single_column               => 1,
+		trunc                       => 1,
+		replace_new_lines_with      => '|',
+		identificator_column_number => 0,
 
-		#L<Text::CSV> paramteres
+		#L<Text::CSV_XS> paramteres
 		sep_char              => q{,},
 		escape_char           => q{\\},
 		quote_char            => q{"},
@@ -131,13 +133,22 @@ Optionaly you can set array ref and set the header lines.
 
 'hash_names' specifies hash names fro hash_of() function.
 
-'single_column' files that store just the identificator for line. In this case during the read
-1 is set as the second column. During store that one is dropped so single column will be stored
-back.
+'single_column' files that store just the identificator for line. In this case
+during the read 1 is set as the second column. During store that one is dropped
+so single column will be stored back.
 
 'trunc' don't read previous file values. Header lines will persist.
 
-See L<Text::CSV> for 'sep_char', 'escape_char', 'quote_char', 'always_quote', 'binary, type'
+'replace_new_lines_with' [\n\r]+ are replaced by this character if defined. By
+default it is '|'. It is a good idea to replace new lines because they are not
+handled by Text::CSV_XS on read.
+
+'identificator_column_number'. If identificator is in different column than the
+first one set this value. Column are numbered starting with 0 like in an
+@array. ->value_of and ->hash_of are indexed as it the identificator column
+was not there.
+
+See L<Text::CSV_XS> for 'sep_char', 'escape_char', 'quote_char', 'always_quote', 'binary, type'
 
 =item value_of()
 
@@ -153,24 +164,49 @@ Returns hash of values. Names for the hash values are taken from hash_names para
 
 when this one is called it will write the changes back to file.
 
+=item store_as_xml()
+
+this will write to the file but the values will be excel xml formated. Combined with
+proper header and footer lines this can generate excel readable xml file.
+
 =item ident_list()
 
 will return the array of identificators
 
-=item csv_line_of($ident)
+=item output_row_of($ident, $type)
 
-Returns one line of csv for given identificator.
+$type is one of csv or xml.
+
+Returns one row of data for given identificator.
+
+=item csv_line_of($identificator)
+
+Calls $self->output_row_of($identificator, 'csv').
+
+=item header_lines()
+
+Set or get header lines.
+
+=item footer_lines()
+
+Set or get footer lines.
+
+=item finish()
+
+Called by destructor to clean up thinks. Calls store() if auto_atore is on
+and closes csv filehandle.
+
+=cut
 
 =back
 
 =head1 TODO
 
-	- mention Track::Max and Track::Min
 	- ident_list() should return number of non undef rows in scalar context
 	- strategy for Track ->new({ strategy => sub { $a > $b } })
 	- then rewrite max/min to use it this way
-	- different column as the first one as identiffier column
 	- constraints for columns
+	- shell executable to copy, dump csv file or extract data from it
 
 =head1 SEE ALSO
 
@@ -186,7 +222,7 @@ Jozef Kutej <jozef.kutej@hp.com>
 
 package Text::CSV::Track;
 
-our $VERSION = '0.5';
+our $VERSION = '0.6';
 use 5.006;
 
 use strict;
@@ -206,10 +242,12 @@ __PACKAGE__->mk_accessors(
 		ignore_badly_formated
 		_csv_format
 		header_lines
+		footer_lines
 		hash_names
 		single_column
 		trunc
 		replace_new_lines_with
+		identificator_column_number
 
 		sep_char
 		escape_char
@@ -222,7 +260,7 @@ __PACKAGE__->mk_accessors(
 
 use FindBin;
 
-use Text::CSV;
+use Text::CSV_XS;
 use Carp::Clan;
 use English qw(-no_match_vars);
 use Fcntl ':flock'; # import LOCK_* constants
@@ -231,7 +269,6 @@ use List::MoreUtils qw { first_index };
 use IO::Handle; #must be because file_fh->input_line_number function
 
 
-#new
 sub new {
 	my $class  = shift;
 	my $ra_arg = shift;
@@ -242,14 +279,16 @@ sub new {
 	#create empty pointers
 	$self->{_rh_value_of} = {};
 	$self->{header_lines} = [] if not defined $self->{header_lines};
+	$self->{footer_lines} = [] if not defined $self->{footer_lines};
 	
 	return $self;
 }
 
-sub csv_line_of {
+sub output_row_of {
 	my $self          = shift;
 	my $identificator = shift;
-
+	my $type          = shift;
+	
 	#combine values for csv file
 	my @fields = $self->value_of($identificator);
 
@@ -268,13 +307,40 @@ sub csv_line_of {
 		}
 	}
 	
-	croak "invalid value to store to an csv file - ", $self->_csv_format->error_input(),"\n"
-		if (not $self->_csv_format->combine($identificator, @fields));
+	#add identificator to the values
+	splice(@fields, $self->identificator_column_number, 0, $identificator);
 	
-	return $self->_csv_format->string();
+	if ($type eq 'csv') {
+		croak "invalid value to store to an csv file - ", $self->_csv_format->error_input(),"\n"
+			if (not $self->_csv_format->combine(@fields));
+
+		return $self->_csv_format->string();
+	}
+	elsif ($type eq 'xml') {
+		my $xml_line = '<Row>'."\n";
+		$xml_line .= '    <Cell><Data ss:Type="String">'.$identificator.'</Data></Cell>'."\n";
+		foreach my $col_value ($self->value_of($identificator)) {
+			$col_value = '' if not defined $col_value;
+			$xml_line .= '    <Cell><Data ss:Type="String">'.$col_value.'</Data></Cell>'."\n";
+		}
+		$xml_line .= '</Row>';
+
+		return $xml_line;
+	}
+	else {
+		croak "unknow output format";
+	}
 }
 
-#get or set value
+
+sub csv_line_of {
+	my $self          = shift;
+	my $identificator = shift;
+	
+	return $self->output_row_of($identificator, 'csv');
+}
+
+
 sub value_of {
 	my $self          = shift;
 	my $identificator = shift;
@@ -316,6 +382,7 @@ sub value_of {
 	}
 }
 
+
 sub hash_of {
 	my $self          = shift;
 	my $identificator = shift;
@@ -356,9 +423,17 @@ sub hash_of {
 	}
 }
 
-#save back changes 
+
+sub store_as_xml {
+	my $self         = shift;
+
+	return $self->store(1);
+}
+
+
 sub store {
-	my $self = shift;
+	my $self         = shift;
+	my $store_as_xml = shift;
 
 	#lazy initialization
 	$self->_init();
@@ -368,7 +443,6 @@ sub store {
 	my $file_name          = $self->file_name;
 	my $full_time_lock     = $self->full_time_lock;
 	my $file_fh            = $self->_file_fh;
-	my $header_lines_count = scalar @{$self->header_lines};
 
 	if (not $full_time_lock) {
 		open($file_fh, "+>>", $file_name) or croak "can't write to file '$file_name' - $OS_ERROR";
@@ -380,12 +454,18 @@ sub store {
 	#loop through identificators and store to array only if all works fine file will be overwritten
 	my @file_lines;
 	foreach my $identificator (sort $self->ident_list()) {
-		my $csv_line = $self->csv_line_of($identificator);
+		my $file_line;
+		if (defined $store_as_xml) {
+			$file_line = $self->output_row_of($identificator, 'xml');
+		}
+		else {
+			$file_line = $self->output_row_of($identificator, 'csv');
+		}
 
 		#skip removed entries
-		next if not $csv_line;
+		next if not $file_line;
 		
-		push(@file_lines, $csv_line."\n");
+		push(@file_lines, $file_line."\n");
 	}
 
 	#truncate the file so that we can store new results
@@ -394,7 +474,6 @@ sub store {
 	#write header lines
 	foreach my $header_line (@{$self->header_lines}) {
 		print {$file_fh} $header_line, "\n";
-		$header_lines_count--;
 	}
 
 	#write csv lines
@@ -403,6 +482,11 @@ sub store {
 		print {$file_fh} $line;
 	}
 	
+	#write footer lines
+	foreach my $footer_line (@{$self->footer_lines}) {
+		print {$file_fh} $footer_line, "\n";
+	}
+
 	close($file_fh);
 }
 
@@ -416,8 +500,9 @@ sub _init {
 	$self->_lazy_init(1);
 	
 	#default values
-	$self->replace_new_lines_with('|') if not exists $self->{'replace_new_lines_with'};
-	$self->binary(1)                   if not exists $self->{'binary'};
+	$self->replace_new_lines_with('|')    if not exists $self->{'replace_new_lines_with'};
+	$self->binary(1)                      if not exists $self->{'binary'};
+	$self->identificator_column_number(0) if not exists $self->{'identificator_column_number'};
 	
 	#get local variables from self hash
 	my $rh_value_of         = $self->_rh_value_of;
@@ -427,6 +512,8 @@ sub _init {
 	my $_no_lock            = $self->_no_lock;
 	my $header_lines_count;
 	my $header_lines_from_file;
+	my $footer_lines_count;
+	my $footer_lines_from_file;
 
 	if (ref $self->{header_lines} eq 'ARRAY') {
 		$header_lines_count = scalar @{$self->header_lines};
@@ -439,7 +526,18 @@ sub _init {
 		$header_lines_from_file = 1;
 	}
  
-	#Text::CSV variables
+	if (ref $self->{footer_lines} eq 'ARRAY') {
+		$footer_lines_count = scalar @{$self->footer_lines};
+		$footer_lines_from_file = 0;
+	}
+	else {
+		#initialize footer_lines with array of empty strings if footer_lines is number
+		$footer_lines_count = $self->{footer_lines};
+		$self->footer_lines([ map {""} (1 .. $footer_lines_count) ]);
+		$footer_lines_from_file = 1;
+	}
+ 
+	#Text::CSV_XS variables
 	my $sep_char            = defined $self->sep_char    ? $self->sep_char    : q{,};
 	my $escape_char         = defined $self->escape_char ? $self->escape_char : q{\\};
 	my $quote_char          = defined $self->quote_char  ? $self->quote_char  : q{"};
@@ -451,7 +549,7 @@ sub _init {
 	return if not $file_name;
 
 	#define csv format
-	$self->_csv_format(Text::CSV->new({
+	$self->_csv_format(Text::CSV_XS->new({
 		sep_char     => $sep_char,
 		escape_char  => $escape_char,
 		quote_char   => $quote_char,
@@ -497,6 +595,13 @@ sub _init {
 	else {
 		flock($file_fh, LOCK_SH) or croak "can't lock file '$file_name' - $OS_ERROR\n";
 	}
+	
+	my $lines_count = 0;
+	$lines_count++ while (<$file_fh>);
+
+	#reset file position
+	seek($file_fh, 0, SEEK_SET);
+	$file_fh->input_line_number(0);
 
 	#create hash of identificator => 1
 	my %identificator_exist = map { $_ => 1 } $self->ident_list;
@@ -504,7 +609,9 @@ sub _init {
 	#parse lines and store values in the hash
 	LINE:
 	while (my $line = <$file_fh>) {
-		chomp($line);			
+		chomp($line);
+		$lines_count--;
+		
 		#skip header lines and save them for store()
 		if ($header_lines_count) {
 			#save header line if not defined
@@ -515,9 +622,17 @@ sub _init {
 			
 			next;
 		}
+
+		#skip footer lines and save them for store()
+		if ($lines_count < $footer_lines_count) {
+			#save footer lines if not defined
+			${$self->footer_lines}[$footer_lines_count - $lines_count - 1] = $line if $footer_lines_from_file;
+			
+			next;
+		}
 		
 		#skip reading of values if in 'trunc' mode
-		last if $self->trunc;
+		next if $self->trunc;
 	
 		#verify line. if incorrect skip with warning
 		if (!$self->_csv_format->parse($line)) {
@@ -534,7 +649,7 @@ sub _init {
 		
 		#extract fields
 		my @fields = $self->_csv_format->fields();
-		my $identificator = shift @fields;
+		my $identificator = splice(@fields, $self->identificator_column_number, 1);
 		
 		#if in single column mode insert '1' to the fields
 		unshift(@fields, 1) if $self->single_column;
@@ -560,6 +675,7 @@ sub _init {
 	}
 }
 
+
 sub ident_list {
 	my $self = shift;
 
@@ -571,6 +687,7 @@ sub ident_list {
 
 	return keys %{$rh_value_of};
 }
+
 
 sub header_lines {
 	my $self = shift;
@@ -588,6 +705,24 @@ sub header_lines {
 	}
 	
 }
+
+
+sub footer_lines {
+	my $self = shift;
+
+	#set
+	if (@_ >= 1) {
+		$self->{footer_lines} = shift;
+	} else
+	#get
+	{
+		#if footer_lines is not array then do lazy init and get the footer lines from file
+		$self->_init if (ref $self->{footer_lines} ne 'ARRAY');
+	
+		return $self->{footer_lines};
+	}
+}
+
 
 sub finish {
 	my $self = shift;

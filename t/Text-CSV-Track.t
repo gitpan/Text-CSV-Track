@@ -4,7 +4,7 @@
 #########################
 
 use Test::More;	# 'no_plan';
-BEGIN { plan tests => 70 };
+BEGIN { plan tests => 91 };
 
 use Text::CSV::Track;
 
@@ -228,7 +228,7 @@ print "binary data\n";
 $track_object = Text::CSV::Track->new({ file_name => $file_name });
 
 #add binary data
-my $binary_data = "+ľščťžýáíé";
+my $binary_data = chr(196).chr(190).chr(197).chr(161).chr(196).chr(141).chr(197).chr(165).chr(197).chr(190).chr(195).chr(189).chr(195).chr(161).chr(195).chr(173).chr(195).chr(169);
 $track_object->value_of("xman4", $binary_data);
 $track_object->store();
 $track_object = undef;
@@ -356,6 +356,8 @@ is($track_object->value_of('multi test1'), 2,			'multi column storing in scalar 
 my @got = $track_object->value_of('multi test1');
 my @expected = (123, 321);
 is_deeply(\@got, \@expected,							'multi column storing');
+
+is($track_object->csv_line_of('multi test2'), '"multi test2",222,111' , 'test csv_line_of()');
 
 $track_object->store();
 $track_object = undef;
@@ -543,7 +545,128 @@ my @file_lines2 = read_file($file_name);
 is(@file_lines2, 2,									'check numeric header lines definition on empty file');
 
 
+#footer
+print "test file with footer lines\n";
+
+my @footer_lines = (
+	"footer line 1",
+	"footer line 2 $SINGLE_QUOTE, $DOUBLE_QUOTE",
+	"footer line 3, 333",
+);
+
+@file_lines = (
+	"heade line 1\n",
+	"heade line 2 $SINGLE_QUOTE, $DOUBLE_QUOTE\n",
+	"heade line 3, 333\n",
+	"123,\"jeden dva try\"\n",
+	"321,\"tri dva jeden\"\n",
+	"unquoted,\"last one\"\n",
+	map { $_."\n" } @footer_lines,
+);
+
+write_file($file_name, @file_lines);
+
+#check
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name,
+	header_lines => 3,
+	footer_lines => 3,
+});
+is(scalar @{$track_object->header_lines}, 3,		'we should have three header lines');
+is(scalar @{$track_object->footer_lines}, 3,		'we should have three footer lines');
+is($track_object->ident_list, 3,					'we should have three records');
+is($track_object->value_of('123'), "jeden dva try",
+													'check first line read');
+
+is_deeply(\@{$track_object->footer_lines}, \@footer_lines,
+													'check read footer lines');
+
+@footer_lines = (
+	"footer line 111",
+	"footer line 222",
+	"footer line 333",
+);
+
+$track_object->footer_lines(\@footer_lines);
+$track_object->store;
+undef $track_object;
+
+$track_object = Text::CSV::Track->new({
+	file_name    => $file_name,
+	header_lines => 3,
+	footer_lines => 3,
+});
+is_deeply(\@{$track_object->footer_lines}, \@footer_lines,
+													'check changed footer lines');
+undef $track_object;
+
+#footer with trunc option
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+	footer_lines        => 3,
+	trunc               => 1,
+});
+$track_object->store();
+undef $track_object;
+
+@file_lines2 = read_file($file_name);
+is(6, scalar @file_lines2,							'we should have the same file with only header and footer lines');
+
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+	footer_lines        => 3,
+	trunc               => 1,
+});
+is_deeply(\@{$track_object->footer_lines}, \@footer_lines,
+													'check footer lines');
+
+#empty file with footer
+unlink($file_name);
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+	footer_lines        => 3,
+	ignore_missing_file => 1,
+});
+$track_object->store;
+
+@file_lines2 = read_file($file_name);
+is(6, scalar @file_lines2,									'we should have empty file with 6 empty header and footer lines');
+
+$track_object->value_of('test', '123');
+$track_object->footer_lines(\@footer_lines);
+$track_object->store;
+undef $track_object;
+
+@file_lines2 = read_file($file_name);
+is(7, scalar @file_lines2,									'we should have the same file with footer filled and 1 value');
+
+$track_object = Text::CSV::Track->new({
+	file_name           => $file_name,
+	header_lines        => 3,
+	footer_lines        => 3,
+});
+is($track_object->value_of('test'), '123',					'check that value');
+
+#removing of footer
+$track_object->footer_lines([]);
+$track_object->store;
+undef $track_object;
+
+@file_lines2 = read_file($file_name);
+is(4, scalar @file_lines2,									'we should have the same file without footer');
+
 #restore file
+@file_lines = (
+	"heade line 1\n",
+	"heade line 2 $SINGLE_QUOTE, $DOUBLE_QUOTE\n",
+	"heade line 3, 333\n",
+	"123,\"jeden dva try\"\n",
+	"321,\"tri dva jeden\"\n",
+	"unquoted,\"last one\"\n",
+);
 write_file($file_name, @file_lines);
 
 ###TEST always_quote
@@ -616,8 +739,7 @@ print "failure of store should not corrupt final csv file\n";
 #two line entry test
 $track_object = Text::CSV::Track->new({ file_name => $file_name, binary => 0 });
 
-$binary_data = "+ľščťžýáíé";
-
+$binary_data = chr(196).chr(190).chr(197).chr(161).chr(196).chr(141).chr(197).chr(165).chr(197).chr(190).chr(195).chr(189).chr(195).chr(161).chr(195).chr(173).chr(195).chr(169);
 $track_object->value_of("111", $binary_data);
 eval { $track_object->store(); };
 isnt($EVAL_ERROR, $EMPTY_STRING,					'we should have croak when storing binary and "binary => 0"');
@@ -626,6 +748,81 @@ $EVAL_ERROR = undef;
 
 @file_lines_after = read_file($file_name);
 is_deeply(\@file_lines, \@file_lines_after,			'check quote file after crashed store');
+
+
+###
+# different column as identificator
+print "different column as identificator\n";
+@file_lines = (
+	"abc,5,qwe\n",
+	"abc,4\n",
+	"123,6,hgf rty\n",
+	"321,7,!~;:\n",
+);
+
+write_file($file_name, @file_lines);
+$track_object = Text::CSV::Track->new({
+	file_name                   => $file_name,
+	identificator_column_number => 1,
+	hash_names                  => [ qw{ col coool } ],
+});
+
+is_deeply([ $track_object->value_of(4) ], [ 'abc' ] ,				'check record');
+is_deeply([ $track_object->value_of(5) ], [ 'abc', 'qwe'] ,			'check record');
+is_deeply([ $track_object->value_of(6) ], [ '123', 'hgf rty'],		'check record');
+is_deeply([ $track_object->value_of(7) ], [ '321', '!~;:' ],		'check record');
+
+%hash = %{$track_object->hash_of(6)};
+is($hash{'col'}, 123,								'check record generated by hash_of');
+is($hash{'coool'}, 'hgf rty',						'check record generated by hash_of');
+
+$track_object->store();
+
+@file_lines = (
+	"abc,4\n",
+	"abc,5,qwe\n",
+	"123,6,\"hgf rty\"\n",
+	"321,7,!~;:\n",
+);
+
+@file_lines_after = read_file($file_name);
+is_deeply(\@file_lines, \@file_lines_after,			'check file after store of identificator in different column');
+
+
+#check store as xml
+print "check store as xml\n";
+$track_object = Text::CSV::Track->new({
+	file_name => $file_name,
+	trunc     => 1,
+});
+$track_object->value_of('1', 'aaa');
+$track_object->value_of('2', 'ddd');
+$track_object->value_of('3', 'bbb');
+$track_object->value_of('4', 'ccc');
+$track_object->store_as_xml();
+
+@file_lines = (
+	"<Row>\n",
+	"    <Cell><Data ss:Type=\"String\">1</Data></Cell>\n",
+	"    <Cell><Data ss:Type=\"String\">aaa</Data></Cell>\n",
+	"</Row>\n",
+	"<Row>\n",
+	"    <Cell><Data ss:Type=\"String\">2</Data></Cell>\n",
+	"    <Cell><Data ss:Type=\"String\">ddd</Data></Cell>\n",
+	"</Row>\n",
+	"<Row>\n",
+	"    <Cell><Data ss:Type=\"String\">3</Data></Cell>\n",
+	"    <Cell><Data ss:Type=\"String\">bbb</Data></Cell>\n",
+	"</Row>\n",
+	"<Row>\n",
+	"    <Cell><Data ss:Type=\"String\">4</Data></Cell>\n",
+	"    <Cell><Data ss:Type=\"String\">ccc</Data></Cell>\n",
+	"</Row>\n",
+);
+
+@file_lines_after = read_file($file_name);
+is_deeply(\@file_lines_after, \@file_lines,			'check file after store as xml');
+
 
 ### CLEANUP
 
