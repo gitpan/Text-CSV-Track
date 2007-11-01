@@ -55,20 +55,18 @@ isnt($track_object->value_of('test3'), 2,			'we should have old value in "test3"
 
 #generate temp file name
 my $tmp_template = 'text-csv-track-XXXXXX';
-my (undef, $short_file_name) = tempfile($tmp_template, OPEN => 0);
-my $tmpdir = File::Spec->tmpdir();
-my $file_name = $tmpdir.'/'.$tmp_template;	#default will be overwriteen if not in DEVELOPMENT mode
+my ($fh, $file_name) = tempfile($tmp_template);
+
+#remove temp file if exists
+close($fh);
+unlink($file_name) or die 'unable to remove "'.$file_name.'"';
 
 #in development it's better to have steady filename other wise it should be random
 if ($DEVELOPMENT) {
-	print "skip random temp filename it's development time\n";	
+	print "skip random temp filename it's development time\n";
+	$file_name = $tmp_template;
+	unlink($file_name);
 }
-else {
-	$file_name = $tmpdir.'/'.$short_file_name;
-}
-
-#remove temp file if exists
-unlink($file_name);
 
 #cleanup after tempfile()
 $OS_ERROR = undef;
@@ -111,7 +109,7 @@ is($track_object->value_of('atonce'), 432,	'do we still have it?');
 
 #open with full time locking
 $track_object = Text::CSV::Track::Max->new({ file_name => $file_name, full_time_lock => 1 });
-open(my $fh, "<", $file_name) or die "can't open file '$file_name' - $OS_ERROR";
+open($fh, "<", $file_name) or die "can't open file '$file_name' - $OS_ERROR";
 $track_object->value_of('x', 1);
 #check lazy init. it should succeed
 isnt(flock($fh, LOCK_SH | LOCK_NB), 0,				'try shared lock while lazy init should not be activated, should succeed');
